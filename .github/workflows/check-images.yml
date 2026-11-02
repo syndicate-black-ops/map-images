@@ -1,0 +1,71 @@
+name: Check images
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check root files
+        shell: python
+        run: |
+          import os
+          import struct
+          import sys
+
+          ALLOWED = {"README.md", ".nojekyll", ".gitignore", ".gitattributes"}
+          SOF = {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}
+
+          def jpeg_size(path):
+              with open(path, "rb") as f:
+                  data = f.read()
+              if data[:3] != b"\xff\xd8\xff":
+                  return None
+              i = 2
+              while i + 4 <= len(data):
+                  if data[i] != 0xFF:
+                      return None
+                  marker = data[i + 1]
+                  if marker == 0xFF:
+                      i += 1
+                      continue
+                  if marker in (0xD8, 0x01) or 0xD0 <= marker <= 0xD7:
+                      i += 2
+                      continue
+                  length = struct.unpack(">H", data[i + 2:i + 4])[0]
+                  if marker in SOF:
+                      height, width = struct.unpack(">HH", data[i + 5:i + 9])
+                      return width, height
+                  i += 2 + length
+              return None
+
+          errors = []
+          for name in sorted(os.listdir(".")):
+              if name in ALLOWED or name in (".git", ".github"):
+                  continue
+              if os.path.isdir(name):
+                  errors.append(f"{name}: folders are not allowed at the root")
+                  continue
+              if not name.endswith(".jpg"):
+                  errors.append(f"{name}: only <map>.jpg files are allowed at the root")
+                  continue
+              if name != name.lower():
+                  errors.append(f"{name}: the name must be lower case")
+              size = jpeg_size(name)
+              if size is None:
+                  errors.append(f"{name}: not a JPEG")
+              elif size != (512, 288):
+                  errors.append(f"{name}: {size[0]}x{size[1]}, must be 512x288")
+
+          for e in errors:
+              print(f"::error file={e.split(':')[0]}::{e}")
+          print(f"{len(errors)} problem(s)")
+          sys.exit(1 if errors else 0)
