@@ -1,7 +1,10 @@
 name: Add map image
+run-name: Add ${{ inputs.map }}
 
-# Started by hand (Actions > Add map image > Run workflow, or `gh workflow run`): commits <map>.jpg to main as
-# github-actions[bot]. The picture comes in as base64 (a 512x288 JPEG is well under the input size limit).
+# Started by FastDL Automate (plugin sbo_map_picture_publish) or by hand (Actions > Add map image > Run workflow, or
+# `gh workflow run`): commits <map>.jpg to main. The picture comes in as base64 (a 512x288 JPEG is well under the input
+# size limit). The commit is made through the REST API with the workflow's token, so GitHub signs it (Verified).
+# The run name "Add <map>" lets a caller find its run.
 
 on:
   workflow_dispatch:
@@ -30,18 +33,24 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Write and check the picture
+      - name: Check and commit the picture
         shell: python
         env:
           MAP: ${{ inputs.map }}
           IMAGE: ${{ inputs.image_base64 }}
           REPLACE: ${{ inputs.replace }}
+          GITHUB_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          API_URL: ${{ github.api_url }}
         run: |
           import base64
+          import json
           import os
           import re
           import struct
           import sys
+          import urllib.error
+          import urllib.request
 
           SOF = {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}
 
@@ -66,11 +75,26 @@ jobs:
                   i += 2 + length
               return None
 
+          def api(method, path, body=None):
+              request = urllib.request.Request(
+                  f"{os.environ['API_URL']}/repos/{os.environ['REPOSITORY']}{path}",
+                  data=None if body is None else json.dumps(body).encode(),
+                  method=method,
+                  headers={
+                      "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
+                      "Accept": "application/vnd.github+json",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+
           name = os.environ["MAP"].strip()
           if not re.fullmatch(r"[a-z0-9_.-]+", name) or name.endswith(".jpg"):
               sys.exit(f"::error::map name must be lower case letters, digits, _ . - without .jpg: {name!r}")
           path = f"{name}.jpg"
-          if os.path.exists(path) and os.environ["REPLACE"] != "true":
+          replace = os.environ["REPLACE"] == "true"
+          if os.path.exists(path) and not replace:
               sys.exit(f"::error::{path} already exists (set replace to change it)")
           try:
               data = base64.b64decode(os.environ["IMAGE"], validate=True)
@@ -81,20 +105,21 @@ jobs:
               sys.exit("::error::not a JPEG")
           if size != (512, 288):
               sys.exit(f"::error::{size[0]}x{size[1]}, must be 512x288")
-          with open(path, "wb") as f:
-              f.write(data)
           print(f"{path}: {len(data)} bytes, 512x288")
 
-      - name: Commit
-        env:
-          MAP: ${{ inputs.map }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -- "${MAP}.jpg"
-          if git diff --cached --quiet; then
-            echo "No change"
-            exit 0
-          fi
-          git commit -m "${MAP}: map picture"
-          git push origin HEAD:main
+          body = {
+              "message": f"FastDL Automate: {'Replace' if os.path.exists(path) else 'Add'} {path}",
+              "content": base64.b64encode(data).decode("ascii"),
+              "branch": "main",
+          }
+          if os.path.exists(path):
+              with open(path, "rb") as f:
+                  if f.read() == data:
+                      print("No change")
+                      sys.exit(0)
+              body["sha"] = api("GET", f"/contents/{path}?ref=main")["sha"]
+          try:
+              commit = api("PUT", f"/contents/{path}", body)["commit"]
+          except urllib.error.HTTPError as e:
+              sys.exit(f"::error::GitHub error {e.code}: {e.read().decode(errors='replace')[:300]}")
+          print(f"Committed {commit['sha']}: {commit['html_url']}")
