@@ -1,0 +1,100 @@
+name: Add map image
+
+# Started by hand (Actions > Add map image > Run workflow, or `gh workflow run`): commits <map>.jpg to main as
+# github-actions[bot]. The picture comes in as base64 (a 512x288 JPEG is well under the input size limit).
+
+on:
+  workflow_dispatch:
+    inputs:
+      map:
+        description: Map name (lower case, without .jpg)
+        required: true
+      image_base64:
+        description: The 512x288 JPEG, base64 encoded
+        required: true
+      replace:
+        description: Replace an existing picture
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: add-map-image
+  cancel-in-progress: false
+
+jobs:
+  add:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write and check the picture
+        shell: python
+        env:
+          MAP: ${{ inputs.map }}
+          IMAGE: ${{ inputs.image_base64 }}
+          REPLACE: ${{ inputs.replace }}
+        run: |
+          import base64
+          import os
+          import re
+          import struct
+          import sys
+
+          SOF = {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}
+
+          def jpeg_size(data):
+              if data[:3] != b"\xff\xd8\xff":
+                  return None
+              i = 2
+              while i + 4 <= len(data):
+                  if data[i] != 0xFF:
+                      return None
+                  marker = data[i + 1]
+                  if marker == 0xFF:
+                      i += 1
+                      continue
+                  if marker in (0xD8, 0x01) or 0xD0 <= marker <= 0xD7:
+                      i += 2
+                      continue
+                  length = struct.unpack(">H", data[i + 2:i + 4])[0]
+                  if marker in SOF:
+                      height, width = struct.unpack(">HH", data[i + 5:i + 9])
+                      return width, height
+                  i += 2 + length
+              return None
+
+          name = os.environ["MAP"].strip()
+          if not re.fullmatch(r"[a-z0-9_.-]+", name) or name.endswith(".jpg"):
+              sys.exit(f"::error::map name must be lower case letters, digits, _ . - without .jpg: {name!r}")
+          path = f"{name}.jpg"
+          if os.path.exists(path) and os.environ["REPLACE"] != "true":
+              sys.exit(f"::error::{path} already exists (set replace to change it)")
+          try:
+              data = base64.b64decode(os.environ["IMAGE"], validate=True)
+          except Exception as e:
+              sys.exit(f"::error::image_base64 is not valid base64: {e}")
+          size = jpeg_size(data)
+          if size is None:
+              sys.exit("::error::not a JPEG")
+          if size != (512, 288):
+              sys.exit(f"::error::{size[0]}x{size[1]}, must be 512x288")
+          with open(path, "wb") as f:
+              f.write(data)
+          print(f"{path}: {len(data)} bytes, 512x288")
+
+      - name: Commit
+        env:
+          MAP: ${{ inputs.map }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- "${MAP}.jpg"
+          if git diff --cached --quiet; then
+            echo "No change"
+            exit 0
+          fi
+          git commit -m "${MAP}: map picture"
+          git push origin HEAD:main
