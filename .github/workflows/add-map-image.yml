@@ -90,12 +90,10 @@ jobs:
                   return json.load(response)
 
           name = os.environ["MAP"].strip()
-          if not re.fullmatch(r"[a-z0-9_.-]+", name) or name.endswith(".jpg"):
-              sys.exit(f"::error::map name must be lower case letters, digits, _ . - without .jpg: {name!r}")
+          if not re.fullmatch(r"[a-z0-9_.+-]+", name) or name.endswith(".jpg"):
+              sys.exit(f"::error::map name must be lower case letters, digits, _ . + - without .jpg: {name!r}")
           path = f"{name}.jpg"
           replace = os.environ["REPLACE"] == "true"
-          if os.path.exists(path) and not replace:
-              sys.exit(f"::error::{path} already exists (set replace to change it)")
           try:
               data = base64.b64decode(os.environ["IMAGE"], validate=True)
           except Exception as e:
@@ -106,6 +104,13 @@ jobs:
           if size != (512, 288):
               sys.exit(f"::error::{size[0]}x{size[1]}, must be 512x288")
           print(f"{path}: {len(data)} bytes, 512x288")
+          if os.path.exists(path):
+              with open(path, "rb") as f:
+                  if f.read() == data:
+                      print(f"{path} already has this picture: nothing to commit")
+                      sys.exit(0)
+              if not replace:
+                  sys.exit(f"::error::{path} already exists with another picture (set replace to change it)")
 
           body = {
               "message": f"FastDL Automate: {'Replace' if os.path.exists(path) else 'Add'} {path}",
